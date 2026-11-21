@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    actor R as Руководитель
+    participant B as Бот в Telegram (aiogram)
+    participant G as Генератор запросов
+    participant DB as PostgreSQL
+    participant C as Клиент 1С (httpx)
+    participant S as HTTP-сервис 1С<br/>База УНФ
+
+    R->>B: Вопрос обычным текстом
+    B->>DB: Проверка users.is_allowed
+    alt Доступа нет
+        B-->>R: Сообщение об отсутствии доступа
+    else Доступ есть
+        B->>G: Вопрос
+        G->>DB: Короткий каталог metadata_objects
+        DB-->>G: Объекты
+        G->>G: YandexGPT, шаг 1: выбор таблиц и значений справочников
+        G->>C: /lookup для каждого значения
+        C->>S: POST /lookup (поиск по подстроке)
+        S-->>C: items: GUID, наименование
+        C-->>G: Кандидаты
+        alt Значение неоднозначно
+            G-->>B: Список кандидатов
+            B-->>R: Кнопки с вариантами
+            R->>B: callback с выбором
+        end
+        G->>G: YandexGPT, шаг 2: текст запроса и параметры
+        G->>G: Валидатор: таблицы из каталога, ПЕРВЫЕ N, параметры
+        loop До двух попыток исправления
+            G->>C: /query
+            C->>S: POST /query
+            S-->>C: ok/columns/rows или error
+            C-->>G: Результат
+            alt Ошибка 1С или валидатора
+                G->>G: YandexGPT: исправление по тексту ошибки
+            end
+        end
+        B->>DB: Запись в request_logs
+        alt Запрос не построился
+            G-->>B: Причина неудачи
+            B-->>R: Просьба переформулировать
+        else Запрос выполнен
+            G->>G: YandexGPT, шаг 3: обобщение (не более 50 строк)
+            G-->>B: Ответ 1–3 предложения с цифрами
+            B-->>R: Ответ
+        end
+    end
