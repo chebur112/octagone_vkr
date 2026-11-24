@@ -7,19 +7,13 @@ from aiogram.types import Message
 from app.llm.client import LLMError, YandexGPTClient
 from app.onec.client import OneCClient
 
+from app.generator.query_generator import generate_query
+from app.generator.query_validator import validate_query
+from app.generator.table_selector import get_selected_objects, select_tables
+
 import logging
 
 log = logging.getLogger(__name__)
-
-QUERY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "query": {"type": "string"},
-        "params": {"type": "object"},
-    },
-    "required": ["query", "params"],
-    "additionalProperties": False,
-}
 
 
 def create_router(onec: OneCClient, llm: YandexGPTClient) -> Router:
@@ -35,47 +29,26 @@ def create_router(onec: OneCClient, llm: YandexGPTClient) -> Router:
     async def question(message: Message) -> None:
         question_text = message.text
 
-        prompt = f"""
-Ты пишешь запрос на языке запросов 1С.
-
-Вопрос руководителя:
-{question_text}
-
-Используй виртуальную таблицу регистра строго в таком виде:
-
-РегистрНакопления.Продажи.Обороты(&Начало, &Конец, , )
-
-Период передаётся только через параметры виртуальной таблицы.
-Запрещено фильтровать период через ГДЕ.
-Запрещено использовать РегистрНакопления.Продажи.Обороты без круглых скобок.
-
-Для общей суммы продаж запрос должен иметь вид:
-
-ВЫБРАТЬ
-    СУММА(СуммаОборот) КАК Сумма
-ИЗ
-    РегистрНакопления.Продажи.Обороты(&Начало, &Конец, , )
-Верни только JSON без пояснений:
-{{
-  "query": "текст запроса 1С",
-  "params": {{
-    "Начало": {{"type": "date", "value": "ISO-дата"}},
-    "Конец": {{"type": "date", "value": "ISO-дата"}}
-  }}
-}}
-
-Для вопроса о январе 2021 используй даты:
-Начало = 2021-01-01T00:00:00
-Конец = 2021-01-31T23:59:59
-"""
-
         try:
-            generated = await llm.chat_json(
-                [{"role": "user", "content": prompt}],
-                schema=QUERY_SCHEMA,
-                temperature=0.1,
-            )
+            selected_names = await select_tables(question_text, llm)
+            if not selected_names:
+                await message.answer(
+                    "Уточните, что хотите узнать. Например, «Сколько всего продали в январе 2021?»"
+                )
+                return
+            objects = await get_selected_objects(selected_names)
+            generated = await generate_query(question_text, objects, llm)
             log.info("YandexGPT сгенерировала запрос: %s", generated)
+
+            try:
+                generated["query"] = validate_query(
+                    generated["query"],
+                    generated["params"],
+                    objects,
+                )
+            except ValueError as error:
+                await message.answer(f"Запрос не прошёл проверку: {error}")
+                return
 
             log.info("Отправляем запрос в 1С")
 
@@ -94,7 +67,7 @@ def create_router(onec: OneCClient, llm: YandexGPTClient) -> Router:
                 return
 
             answer_prompt = f"""
-Ответь руководителю коротко и по-русски.
+Ответь руководителю коротко.
 
 Вопрос:
 {question_text}
@@ -117,6 +90,7 @@ def create_router(onec: OneCClient, llm: YandexGPTClient) -> Router:
         except LLMError as error:
             await message.answer(str(error))
         except Exception:
+            log.exception("Ошибка обработки вопроса")
             await message.answer("Не удалось обработать вопрос.")
 
     return router

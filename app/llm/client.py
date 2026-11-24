@@ -1,9 +1,12 @@
 import json
+import logging
 
 import httpx
 from openai import APIError, AsyncOpenAI
 
 from app.config import settings
+
+log = logging.getLogger(__name__)
 
 
 BASE_URL = "https://ai.api.cloud.yandex.net/v1"
@@ -65,6 +68,7 @@ class YandexGPTClient:
                 },
             )
         except (APIError, httpx.HTTPError) as error:
+            log.error("Ошибка запроса JSON к YandexGPT: %s", error)
             raise LLMError("Не удалось получить JSON от YandexGPT") from error
 
         content = response.choices[0].message.content
