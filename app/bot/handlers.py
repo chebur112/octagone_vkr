@@ -11,22 +11,44 @@ from app.generator.query_generator import generate_query
 from app.generator.query_validator import validate_query
 from app.generator.table_selector import get_selected_objects, select_tables
 
+from app.db.users import is_user_allowed
+
 import logging
 
 log = logging.getLogger(__name__)
 
+async def check_access(message: Message) -> bool:
+    sender = message.from_user
+    if sender is None or message.sender_chat is not None:
+        await message.answer("Доступ закрыт")
+        return False
+    
+    try:
+        allowed = await is_user_allowed(sender.id)
+    except Exception:
+        log.exception("Не удалось проверить доступ к Базе Данных")
+        await message.answer("Не удалось проверить доступ к Базе Данных")
+        return False
+    if not allowed:
+        await message.answer("Доступ закрыт")
+        return False
+    return True
 
 def create_router(onec: OneCClient, llm: YandexGPTClient) -> Router:
     router = Router()
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
+        if not await check_access(message):
+            return
         await message.answer(
             "Задайте вопрос о продажах, закупках, деньгах или запасах обычным текстом."
         )
 
     @router.message(F.text)
     async def question(message: Message) -> None:
+        if not await check_access(message):
+            return
         question_text = message.text
 
         try:
